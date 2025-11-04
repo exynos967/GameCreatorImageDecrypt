@@ -15,6 +15,31 @@ def is_valid_png(data):
         return False
 
 
+def is_valid_ogg(data: bytes) -> bool:
+    """最小 OGG 校验：以 'OggS' 开头"""
+    return len(data) >= 4 and data[:4] == b"OggS"
+
+
+def is_valid_mp3(data: bytes) -> bool:
+    """最小 MP3 校验：'ID3' 标签或扫描到帧同步 0xFFE?（前 16KB）"""
+    if len(data) < 2:
+        return False
+    # ID3 标签
+    if data[:3] == b"ID3":
+        return True
+    # 扫描同步字（允许前部有少量垃圾字节）
+    limit = min(len(data) - 1, 16 * 1024)
+    for i in range(limit):
+        if data[i] == 0xFF and (data[i + 1] & 0xE0) == 0xE0:
+            return True
+    return False
+
+
+def is_valid_wav(data: bytes) -> bool:
+    """可选 WAV 校验：'RIFF' ... 'WAVE'"""
+    return len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WAVE"
+
+
 def try_decrypt(encrypted_data, candidate_index):
     """尝试用给定的候选位置解密"""
     encrypted_data = np.array(list(encrypted_data), dtype=np.uint8)
@@ -26,18 +51,18 @@ def try_decrypt(encrypted_data, candidate_index):
 
 def brute_force_single_decrypt(args):
     """每个进程解密单个候选位置"""
-    encrypted_data, candidate_index, result = args
+    encrypted_data, candidate_index, result, validator = args
 
     decrypted_data = try_decrypt(encrypted_data, candidate_index)
 
-    if is_valid_png(decrypted_data):
+    if validator(decrypted_data):
         result.put(decrypted_data)
         return candidate_index
 
     return None
 
 
-def brute_force_decrypt_png(input_file_path, output_file_path):
+def brute_force_decrypt_png(input_file_path, output_file_path, validator=is_valid_png):
     """穷举解密 PNG 文件"""
     with open(input_file_path, "rb") as encrypted_file:
         encrypted_data = encrypted_file.read()
@@ -51,7 +76,7 @@ def brute_force_decrypt_png(input_file_path, output_file_path):
         with Pool(processes=os.cpu_count()) as pool:
             pool.map(
                 brute_force_single_decrypt,
-                [(encrypted_data, index, result) for index in ones_indices],
+                [(encrypted_data, index, result, validator) for index in ones_indices],
             )
 
         while not result.empty():
@@ -61,21 +86,52 @@ def brute_force_decrypt_png(input_file_path, output_file_path):
             print(f"解密成功，文件已保存至 {output_file_path}")
             return
 
-    print("未能成功解密 PNG 文件，请检查文件或加密算法。")
+    print("未能成功解密文件，请检查文件或加密算法。")
 
 
-def decrypt_all_png_in_folder(folder_path, output_folder):
-    """遍历文件夹中的所有 PNG 文件并进行解密"""
-    png_files = [f for f in os.listdir(folder_path) if f.lower().endswith(".png")]
+def brute_force_decrypt_ogg(input_file_path, output_file_path):
+    """穷举解密 OGG 文件"""
+    return brute_force_decrypt_png(input_file_path, output_file_path, is_valid_ogg)
+
+
+def brute_force_decrypt_mp3(input_file_path, output_file_path):
+    """穷举解密 MP3 文件"""
+    return brute_force_decrypt_png(input_file_path, output_file_path, is_valid_mp3)
+
+
+def decrypt_all_supported_in_folder(folder_path, output_folder):
+    """遍历文件夹中的支持格式并进行解密：png、ogg、mp3"""
+    supported = {
+        ".png": brute_force_decrypt_png,
+        ".ogg": brute_force_decrypt_ogg,
+        ".mp3": brute_force_decrypt_mp3,
+    }
+
+    all_files = [
+        f
+        for f in os.listdir(folder_path)
+        if os.path.isfile(os.path.join(folder_path, f))
+    ]
 
     os.makedirs(output_folder, exist_ok=True)
 
-    for png_file in png_files:
-        input_file = os.path.join(folder_path, png_file)
-        output_file = os.path.join(output_folder, f"decrypted_{png_file}")
+    target_files = []
+    for name in all_files:
+        _, ext = os.path.splitext(name)
+        if ext.lower() in supported:
+            target_files.append(name)
+
+    if not target_files:
+        print("未在输入目录中找到支持的文件（png/ogg/mp3）。")
+        return
+
+    for file_name in target_files:
+        input_file = os.path.join(folder_path, file_name)
+        output_file = os.path.join(output_folder, f"decrypted_{file_name}")
         print(f"开始解密文件: {input_file}")
-        brute_force_decrypt_png(input_file, output_file)
-        print(f"解密完成: {output_file}")
+        decrypt_fn = supported[os.path.splitext(file_name)[1].lower()]
+        decrypt_fn(input_file, output_file)
+        print(f"处理完成: {output_file}")
 
 
 if __name__ == "__main__":
@@ -88,4 +144,4 @@ if __name__ == "__main__":
     os.makedirs(input_folder, exist_ok=True)
     os.makedirs(output_folder, exist_ok=True)
 
-    decrypt_all_png_in_folder(input_folder, output_folder)
+    decrypt_all_supported_in_folder(input_folder, output_folder)
