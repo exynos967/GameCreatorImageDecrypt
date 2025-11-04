@@ -40,20 +40,28 @@ def is_valid_wav(data: bytes) -> bool:
     return len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WAVE"
 
 
-def try_decrypt(encrypted_data, candidate_index):
-    """尝试用给定的候选位置解密"""
-    encrypted_data = np.array(list(encrypted_data), dtype=np.uint8)
-    encrypted_data[1], encrypted_data[2] = encrypted_data[2], encrypted_data[1]
-    decrypted_data = np.delete(encrypted_data, candidate_index)
+def try_decrypt(encrypted_data, candidate_index, swap_pair=(1, 2)):
+    """尝试用给定的候选位置解密
 
-    return bytes(decrypted_data)
+    参数:
+    - candidate_index: 待删除的下标（单字节）
+    - swap_pair: 交换的下标对；为 None 表示不交换
+    """
+    arr = np.array(list(encrypted_data), dtype=np.uint8)
+    if swap_pair is not None:
+        a, b = swap_pair
+        if max(a, b) < arr.size:
+            arr[a], arr[b] = arr[b], arr[a]
+    if 0 <= candidate_index < arr.size:
+        arr = np.delete(arr, candidate_index)
+    return bytes(arr)
 
 
 def brute_force_single_decrypt(args):
     """每个进程解密单个候选位置"""
-    encrypted_data, candidate_index, result, validator = args
+    encrypted_data, candidate_index, result, validator, swap_pair = args
 
-    decrypted_data = try_decrypt(encrypted_data, candidate_index)
+    decrypted_data = try_decrypt(encrypted_data, candidate_index, swap_pair)
 
     if validator(decrypted_data):
         result.put(decrypted_data)
@@ -63,27 +71,50 @@ def brute_force_single_decrypt(args):
 
 
 def brute_force_decrypt_png(input_file_path, output_file_path, validator=is_valid_png):
-    """穷举解密 PNG 文件"""
+    """穷举解密 PNG/通用文件（通过 validator 断言）"""
     with open(input_file_path, "rb") as encrypted_file:
         encrypted_data = encrypted_file.read()
 
     ones_indices = [i for i, byte in enumerate(encrypted_data) if byte == 1]
-    print(f"找到 {len(ones_indices)} 个候选的 `1` 字节位置，开始尝试解密...")
+    print(f"找到 {len(ones_indices)} 个候选的 `0x01` 字节位置，开始尝试解密...")
 
     with Manager() as manager:
         result = manager.Queue()
 
-        with Pool(processes=os.cpu_count()) as pool:
-            pool.map(
-                brute_force_single_decrypt,
-                [(encrypted_data, index, result, validator) for index in ones_indices],
-            )
+        def attempt(candidates, swap_pair):
+            if not candidates:
+                return False
+            with Pool(processes=os.cpu_count()) as pool:
+                pool.map(
+                    brute_force_single_decrypt,
+                    [
+                        (encrypted_data, index, result, validator, swap_pair)
+                        for index in candidates
+                    ],
+                )
+            if not result.empty():
+                decrypted_data = result.get()
+                with open(output_file_path, "wb") as output_file:
+                    output_file.write(decrypted_data)
+                print(f"解密成功，文件已保存至 {output_file_path}")
+                return True
+            return False
 
-        while not result.empty():
-            decrypted_data = result.get()
-            with open(output_file_path, "wb") as output_file:
-                output_file.write(decrypted_data)
-            print(f"解密成功，文件已保存至 {output_file_path}")
+        # 层级 1：默认规则（交换 1/2）+ 0x01 候选
+        if attempt(ones_indices, (1, 2)):
+            return
+        # 层级 2：不交换头部 + 0x01 候选
+        print("回退：尝试不交换头部 + 0x01 候选…")
+        if attempt(ones_indices, None):
+            return
+        # 层级 3：扩大候选范围到前 64KB 的所有位置（防止音频中未使用 0x01 作哨兵）
+        max_scan = min(len(encrypted_data), 64 * 1024)
+        range_candidates = list(range(max_scan))
+        print(f"回退：尝试交换 1/2 + 前 {max_scan} 字节的任意删除…（可能较慢）")
+        if attempt(range_candidates, (1, 2)):
+            return
+        print("回退：尝试不交换头部 + 前缀任意删除…（可能较慢）")
+        if attempt(range_candidates, None):
             return
 
     print("未能成功解密文件，请检查文件或加密算法。")
