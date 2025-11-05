@@ -2,3 +2,5 @@
 shrimp-rules.md
 input/
 output/
+.venv/
+script.js
