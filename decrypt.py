@@ -10,6 +10,9 @@ try:
 except Exception:  # noqa: BLE001
     pyzipper = None
 
+# 默认资源 ZIP 解包口令（仅使用此常量，不读取 passwords.txt）
+DEFAULT_ZIP_PASSWORD = "gc_zip_2024"
+
 
 def is_valid_png(data):
     """使用 Pillow 判断文件是否是有效的 PNG 文件"""
@@ -330,8 +333,8 @@ def decrypt_all_supported_in_folder(folder_path, output_folder):
                     extracted = True
                 return extracted
 
-            # 优先尝试已知默认密码（来自游戏 script.js/配置）：gc_zip_2024（AESZip）
-            default_pw = b"gc_zip_2024"
+            # 优先尝试已知默认密码（来自游戏脚本/配置）：使用常量（AESZip）
+            default_pw = DEFAULT_ZIP_PASSWORD.encode("utf-8")
             if pyzipper is not None:
                 try:
                     with pyzipper.AESZipFile(in_path) as zf:
@@ -349,7 +352,7 @@ def decrypt_all_supported_in_folder(folder_path, output_folder):
                             with open(out_path, "wb") as w:
                                 w.write(data)
                             print(
-                                "检测到 AES-ZIP 容器（默认密码命中: gc_zip_2024），已解包：",
+                                "检测到 AES-ZIP 容器（默认密码命中），已解包：",
                                 out_path,
                             )
                             ok_any = True
@@ -364,69 +367,13 @@ def decrypt_all_supported_in_folder(folder_path, output_folder):
                 if extracted:
                     return True
 
-            # 若需要密码，尝试 passwords.txt 字典
-            pwd_file = os.path.join(os.path.dirname(__file__), "passwords.txt")
-            candidates: list[bytes] = []
-            if os.path.exists(pwd_file):
-                with open(pwd_file, "r", encoding="utf-8", errors="ignore") as pf:
-                    for line in pf:
-                        pw = line.strip()
-                        if pw:
-                            candidates.append(pw.encode("utf-8"))
+            # 再尝试 ZipCrypto + 默认口令
+            with zipfile.ZipFile(in_path) as zf:
+                extracted = extract_with_reader(zf, default_pw)
+                if extracted:
+                    print("ZipCrypto 默认密码命中，已解包。")
+                    return True
 
-            # 传统 ZipCrypto 解密尝试
-            if candidates:
-                with zipfile.ZipFile(in_path) as zf:
-                    for pwd in candidates:
-                        try:
-                            if extract_with_reader(zf, pwd):
-                                print(
-                                    "字典命中（ZipCrypto）：密码=",
-                                    pwd.decode("utf-8", "ignore"),
-                                )
-                                return True
-                        except RuntimeError:
-                            continue
-
-            # AES 加密（需要 pyzipper）
-            if pyzipper is not None and candidates:
-                try:
-                    with pyzipper.AESZipFile(in_path) as zf:
-                        for pwd in candidates:
-                            try:
-                                zf.pwd = pwd
-                                for info in zf.infolist():
-                                    if getattr(info, "is_dir", lambda: False)():
-                                        continue
-                                    data = zf.read(info)
-                                    base = os.path.basename(info.filename)
-                                    out_path = os.path.join(
-                                        output_folder, f"decrypted_{base}"
-                                    )
-                                    with open(out_path, "wb") as w:
-                                        w.write(data)
-                                    print(
-                                        "检测到 AES-ZIP 容器，已解包：",
-                                        out_path,
-                                        " 密码=",
-                                        pwd.decode("utf-8", "ignore"),
-                                    )
-                                    return True
-                            except Exception:
-                                continue
-                except Exception:
-                    pass
-
-            if candidates and pyzipper is None:
-                print(
-                    "检测到受密码保护的 ZIP，但缺少 pyzipper 以支持 AES；"
-                    "如需尝试 AES 密码字典，请安装 pyzipper 并提供 passwords.txt。"
-                )
-            if not candidates:
-                print(
-                    "检测到受密码保护的 ZIP（可能使用 deflate64/AES）。"
-                    "请在项目根目录提供 passwords.txt（每行一个密码）以尝试解包。"
-                )
             return False
         except zipfile.BadZipFile:
             return False
