@@ -326,7 +326,7 @@ def decrypt_all_supported_in_folder(folder_path, output_folder):
                     except Exception:
                         continue
                     base = os.path.basename(info.filename)
-                    out_path = os.path.join(output_folder, f"decrypted_{base}")
+                    out_path = os.path.join(output_folder, base)
                     with open(out_path, "wb") as w:
                         w.write(data)
                     print(f"检测到 ZIP 容器，已解包：{out_path}")
@@ -348,7 +348,7 @@ def decrypt_all_supported_in_folder(folder_path, output_folder):
                             except Exception:
                                 continue
                             base = os.path.basename(info.filename)
-                            out_path = os.path.join(output_folder, f"decrypted_{base}")
+                            out_path = os.path.join(output_folder, base)
                             with open(out_path, "wb") as w:
                                 w.write(data)
                             print(
@@ -380,7 +380,7 @@ def decrypt_all_supported_in_folder(folder_path, output_folder):
 
     for file_name in target_files:
         input_file = os.path.join(folder_path, file_name)
-        output_file = os.path.join(output_folder, f"decrypted_{file_name}")
+        output_file = os.path.join(output_folder, file_name)
         print(f"开始解密文件: {input_file}")
 
         # 若文件实为 ZIP 容器，直接解包内部真实资源
